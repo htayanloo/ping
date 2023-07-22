@@ -2,13 +2,17 @@ package main
 
 import (
 	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"runtime"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/fatih/color"
 	"github.com/go-ping/ping"
 	"github.com/olekukonko/tablewriter"
-	"net"
-	"os"
-	"sync"
-	"time"
 )
 
 type HostResult struct {
@@ -45,27 +49,37 @@ func pingHost(host string, results chan<- HostResult) {
 }
 
 func pingAndGetResult(host string) (string, string, float64) {
-	pinger, err := ping.NewPinger(host)
-	if err != nil {
-		return host, "unavailable", 10000 // large value for 'unavailable'
+	if runtime.GOOS == "windows" {
+		out, _ := exec.Command("ping", host, "-n", "1", "-w", "1000").Output()
+		if strings.Contains(string(out), "Request timed out.") {
+			return host, "unavailable", 10000
+		}
+		latency := strings.Split(strings.Split(string(out), "Average = ")[1], "ms")[0]
+		latencyMs, _ := strconv.Atoi(latency)
+		return host, fmt.Sprintf("%d ms", latencyMs), float64(latencyMs)
+	} else {
+		pinger, err := ping.NewPinger(host)
+		if err != nil {
+			return host, "unavailable", 10000 // large value for 'unavailable'
+		}
+
+		pinger.Count = 1
+		pinger.Timeout = time.Second * 1
+
+		err = pinger.Run()
+		if err != nil {
+			return host, "unavailable", 10000 // large value for 'unavailable'
+		}
+
+		stats := pinger.Statistics()
+		if stats.PacketLoss == 100 {
+			return host, "unavailable", 10000 // large value for 'unavailable'
+		}
+
+		latencyMs := stats.AvgRtt.Milliseconds()
+
+		return host, fmt.Sprintf("%d ms", latencyMs), float64(latencyMs)
 	}
-
-	pinger.Count = 1
-	pinger.Timeout = time.Second * 1
-
-	err = pinger.Run()
-	if err != nil {
-		return host, "unavailable", 10000 // large value for 'unavailable'
-	}
-
-	stats := pinger.Statistics()
-	if stats.PacketLoss == 100 {
-		return host, "unavailable", 10000 // large value for 'unavailable'
-	}
-
-	latencyMs := stats.AvgRtt.Milliseconds()
-
-	return host, fmt.Sprintf("%d ms", latencyMs), float64(latencyMs)
 }
 
 func getColoredSparkline(values []float64) string {
@@ -99,7 +113,6 @@ func main() {
 
 	hosts := args[1:]
 	results := make(chan HostResult)
-	var wg sync.WaitGroup
 
 	table := tablewriter.NewWriter(os.Stdout)
 	table.SetHeader([]string{"#", "Host", "Hostname", "Ping Response", "Average Latency", "Latency Change", "Packet Loss %", "Last 10 Responses (Sparkline)"})
@@ -107,21 +120,17 @@ func main() {
 	hostResults := make(map[string]HostResult)
 
 	for _, host := range hosts {
-		wg.Add(1)
-		go func(host string) {
-			defer wg.Done()
-			pingHost(host, results)
-		}(host)
+		go pingHost(host, results)
 	}
 
 	go func() {
 		for result := range results {
 			hostResults[result.Host] = result
 			table.ClearRows()
-			for _, host := range hosts {
+			for i, host := range hosts {
 				if res, ok := hostResults[host]; ok {
 					sparkline := getColoredSparkline(res.History)
-					rowNumber := fmt.Sprintf("%d", index(hosts, res.Host)+1) // Note the change here
+					rowNumber := fmt.Sprintf("%d", i+1)
 					avgLatencyChange := ""
 					if len(res.AvgLatency) > 1 {
 						diff := res.AvgLatency[len(res.AvgLatency)-1] - res.AvgLatency[len(res.AvgLatency)-2]
@@ -143,15 +152,5 @@ func main() {
 		}
 	}()
 
-	wg.Wait()
-}
-
-// index function to find the index of an item in a string slice
-func index(slice []string, item string) int {
-	for i, v := range slice {
-		if v == item {
-			return i
-		}
-	}
-	return -1
+	select {}
 }
