@@ -114,8 +114,9 @@ func main() {
 	hosts := args[1:]
 	results := make(chan HostResult)
 
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"#", "Host", "Hostname", "Ping Response", "Average Latency", "Latency Change", "Packet Loss %", "Last 10 Responses (Sparkline)"})
+	table := tablewriter.NewTable(os.Stdout) // Changed NewWriter to NewTable for v1.0.x style
+	header := []string{"#", "Host", "Hostname", "Ping Response", "Average Latency", "Latency Change", "Packet Loss %", "Last 10 Responses (Sparkline)"}
+	// table.Header(header) // Header will be set inside the loop after Reset
 
 	hostResults := make(map[string]HostResult)
 
@@ -126,7 +127,8 @@ func main() {
 	go func() {
 		for result := range results {
 			hostResults[result.Host] = result
-			table.ClearRows()
+			table.Reset()      // Changed ClearRows to Reset
+			table.Header(header) // Re-set header after Reset
 			for i, host := range hosts {
 				if res, ok := hostResults[host]; ok {
 					sparkline := getColoredSparkline(res.History)
@@ -140,10 +142,22 @@ func main() {
 							avgLatencyChange = color.GreenString("↓")
 						}
 					}
+
+					rowData := []string{rowNumber, res.Host, res.HostName, res.Response, fmt.Sprintf("%d ms", res.AvgLatency[len(res.AvgLatency)-1]), avgLatencyChange, fmt.Sprintf("%d %%", res.PacketLoss), sparkline}
 					if res.Response == "unavailable" {
-						table.Rich([]string{rowNumber, res.Host, res.HostName, res.Response, fmt.Sprintf("%d ms", res.AvgLatency[len(res.AvgLatency)-1]), avgLatencyChange, fmt.Sprintf("%d %%", res.PacketLoss), sparkline}, []tablewriter.Colors{{tablewriter.FgRedColor}, {tablewriter.FgRedColor}, {tablewriter.FgRedColor}, {tablewriter.FgRedColor}, {tablewriter.FgRedColor}, {tablewriter.FgRedColor}, {tablewriter.FgRedColor}})
+						coloredRowData := make([]string, len(rowData))
+						for i, cell := range rowData {
+							// avgLatencyChange and sparkline are already potentially colored by getColoredSparkline or the logic above.
+							// Avoid double-coloring them.
+							if cell == avgLatencyChange || cell == sparkline {
+								coloredRowData[i] = cell
+							} else {
+								coloredRowData[i] = color.RedString(cell)
+							}
+						}
+						table.Append(coloredRowData)
 					} else {
-						table.Append([]string{rowNumber, res.Host, res.HostName, res.Response, fmt.Sprintf("%d ms", res.AvgLatency[len(res.AvgLatency)-1]), avgLatencyChange, fmt.Sprintf("%d %%", res.PacketLoss), sparkline})
+						table.Append(rowData)
 					}
 				}
 			}
